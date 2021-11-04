@@ -1,0 +1,143 @@
+k8s + kubeedge + edgemesh 部署全流程
+docker:19.03.8
+k8s: v1.20
+kubeedge: v1.8.1
+
+不包含k8s+docker的安装过程，主要针对已成功安装k8s+docker的机器的二次部署（例如重启后，或者部署错误后），kubeedge利用keadm官方工具进行部署，CNI工具使用edgemesh（非calico/flannel，需要特别注意），以下按顺序逐条执行
+
+k8s
+$ su root
+$ systemctl stop ufw
+$ systemctl disable ufw
+$ swapoff -a
+$
+$ kubeadm reset
+$ rm -rf $HOME/.kube
+$ kubeadm init --image-repository=registry.aliyuncs.com/google_containers --apiserver-advertise-address=192.168.123.85  --pod-network-cidr=10.244.0.0/16  
+$ mkdir -p $HOME/.kube
+$ cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+$ chown $(id -u):$(id -g) $HOME/.kube/config
+$ kubectl get nodes
+$ kubectl get pods --all-namespaces
+（$ kubectl taint nodes kubecloud-vm node-role.kubernetes.io/master:NoSchedule-）
+
+（$ kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml)
+
+
+
+
+
+
+kubeedge
+[https://blog.csdn.net/weixin_38159695/article/details/118486461]
+利用keadm工具部署
+1.cloudcore:
+$ keadm reset
+$ keadm init --advertise-address=192.168.123.85 --kube-config=$HOME/.kube/config
+(depends on the network status, try more times)
+$ keadm gettoken --kube-config=$HOME/.kube/config
+
+2ce84eb74c38d4fdbd04282682c4224ecd7e7e718859d968ed7d3b7faa648d43.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2MzU4Mzk3NTd9.RN9uXL5IVvVLIBsYPdVrWZSoEI6ozfRNgTvoKDbe5vI
+
+2.edgecore:
+$ su root
+$ keadm reset
+$ rm /etc/systemd/system/edgecore.service
+$ keadm join --cloudcore-ipport=192.168.123.85:10000 --token=2ce84eb74c38d4fdbd04282682c4224ecd7e7e718859d968ed7d3b7faa648d43.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2MzU4Mzk3NTd9.RN9uXL5IVvVLIBsYPdVrWZSoEI6ozfRNgTvoKDbe5vI
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+edgemesh
+按照https://gitee.com/mirrors_kubeedge/edgemesh部署
+
+需要注意的是：
+1.egdecore.yaml
+v1.8.1kubeedge去掉了edgeMesh module，不做任何修改
+metaManager:
+metaServer:
+enable:true
+2. 05-configmap.yaml
+v1.8.1kubeedge已能自动识别publicIP，此文件不作任何修改，特别注意kubeconfig:""  master:""   双引号中间无空格
+3. 06-deployment.yaml
+利用kubectl get nodes确认	server端node名字
+nodeName: cloud-node ，修改cloud-node为server端node名字 
+修改结果：  nodeName: kubecloud-vm
+
+https://gitee.com/mirrors_kubeedge/edgemesh 安装教程内容备份
+（获取EdgeMesh)
+git clone https://github.com/kubeedge/edgemesh.gitcd edgemesh
+安装 CRDs
+kubectl apply -f build/crds/istio/
+部署edgemesh
+在边缘节点，关闭 edgeMesh模块，打开 metaServer 模块，并重启 edgecore
+$ vim /etc/kubeedge/config/edgecore.yamlmodules:  
+
+
+$ systemctl restart edgecore
+在云端，开启 dynamicController 模块，并重启 cloudcore
+$ vim /etc/kubeedge/config/cloudcore.yamlmodules: 
+
+$ pkill cloudcore$ nohup /usr/local/bin/cloudcore > /var/log/kubeedge/cloudcore.log 2>&1 &
+在边缘节点，查看 list-watch 是否开启
+$ curl 127.0.0.1:10550/api/v1/services{"apiVersion":"v1","items":[{"apiVersion":"v1","kind":"Service","metadata":{"creationTimestamp":"2021-04-14T06:30:05Z","labels":{"component":"apiserver","provider":"kubernetes"},"name":"kubernetes","namespace":"default","resourceVersion":"147","selfLink":"default/services/kubernetes","uid":"55eeebea-08cf-4d1a-8b04-e85f8ae112a9"},"spec":{"clusterIP":"10.96.0.1","ports":[{"name":"https","port":443,"protocol":"TCP","targetPort":6443}],"sessionAffinity":"None","type":"ClusterIP"},"status":{"loadBalancer":{}}},{"apiVersion":"v1","kind":"Service","metadata":{"annotations":{"prometheus.io/port":"9153","prometheus.io/scrape":"true"},"creationTimestamp":"2021-04-14T06:30:07Z","labels":{"k8s-app":"kube-dns","kubernetes.io/cluster-service":"true","kubernetes.io/name":"KubeDNS"},"name":"kube-dns","namespace":"kube-system","resourceVersion":"203","selfLink":"kube-system/services/kube-dns","uid":"c221ac20-cbfa-406b-812a-c44b9d82d6dc"},"spec":{"clusterIP":"10.96.0.10","ports":[{"name":"dns","port":53,"protocol":"UDP","targetPort":53},{"name":"dns-tcp","port":53,"protocol":"TCP","targetPort":53},{"name":"metrics","port":9153,"protocol":"TCP","targetPort":9153}],"selector":{"k8s-app":"kube-dns"},"sessionAffinity":"None","type":"ClusterIP"},"status":{"loadBalancer":{}}}],"kind":"ServiceList","metadata":{"resourceVersion":"377360","selfLink":"/api/v1/services"}}
+部署 edgemesh-server 服务
+$ kubectl apply -f build/server/edgemesh/
+namespace/kubeedge configured
+serviceaccount/edgemesh-server created
+clusterrole.rbac.authorization.k8s.io/edgemesh-server created
+clusterrolebinding.rbac.authorization.k8s.io/edgemesh-server created
+configmap/edgemesh-server-cfg created
+部署 edgemesh-agent 服务
+$ kubectl apply -f build/agent/kubernetes/edgemesh-agent/
+namespace/kubeedge configured
+serviceaccount/edgemesh-agent created
+clusterrole.rbac.authorization.k8s.io/edgemesh-agent created
+clusterrolebinding.rbac.authorization.k8s.io/edgemesh-agent created
+configmap/edgemesh-agent-cfg created
+daemonset.apps/edgemesh-agent created
+$ kubectl get all -n kubeedgeNAME
+                                
+
+
+
+
+
+
+
+
+
+
+
+
+
+-------------------------------------------------------------------------------------------------------------
+基本命令：
+kubectl get ns
+kubectl get pods -o wide -A
+kubectl describe pods <podname> -n <namespace>
+kubectl logs <podname> -n <namespace>
+kubectl delete -f <yaml绝对路径> 
+
+POD调试流程：
+1. 查看所有节点状态
+kubectl get pods -o wide -A
+2. 查看具体节点错误信息
+kubectl describe pods <podname> -n <namespace>
+kubectl logs <podname> -n <namespace>
+3. 确认问题，采取措施，例如修改yaml文件
+4.删除错误pod，不是直接输入pod名称删除。
+   例删除server pod时，利用kubectl删除生成server pod的文件，自动识别到这个pod所在节点的name。
+   kubectl delete -f  build/server/edgemesh/06-deployment.yaml
+5.重新通过apply -f xxx.yaml文件建立新的pod
